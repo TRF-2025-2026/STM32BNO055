@@ -7,7 +7,6 @@
 
 #ifndef INC_I2C_H_
 #define INC_I2C_H_
-
 #include "stm32f4xx_hal.h"
 #include "bno055.h"
 

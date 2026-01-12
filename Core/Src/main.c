@@ -52,8 +52,22 @@ DMA_HandleTypeDef hdma_i2c1_rx;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
-/* USER CODE END PV */
+uint8_t imu_reading[6];
+uint8_t euler_reading[6];
+HAL_StatusTypeDef status;
+int16_t accel_data[3];
+float acc_x;
+float acc_y;
+float acc_z;
+int16_t raw_x;
+int16_t raw_y;
+int16_t raw_z;
+int16_t raw_yaw;
+int16_t raw_pitch;
+int16_t raw_roll;
+float yaw;
+float pitch;
+float roll;
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -72,7 +86,9 @@ static void MX_DMA_Init(void);
 //}
 void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+
 /* USER CODE BEGIN PFP */
+
 #ifdef __GNUC__9
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #else
@@ -103,7 +119,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	printf("Terminal Link Active\r\n");
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -128,30 +144,43 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  BNO055_Init_I2C(&hi2c1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  uint8_t imu_readings[6];
-	  uint8_t accel_data[2];
-	  uint8_t acc_x;
-	  uint8_t acc_y;
-	  uint8_t acc_z;
-	  HAL_Delay(300);
-	  GetAccelData(&hi2c1, (uint8_t*)imu_readings);
-	  accel_data[0] = (((int16_t)((uint8_t *)(imu_readings))[1] << 8) | ((uint8_t *)(imu_readings))[0]);
-	  accel_data[1] = (((int16_t)((uint8_t *)(imu_readings))[3] << 8) | ((uint8_t *)(imu_readings))[2]);
-	  accel_data[2] = (((int16_t)((uint8_t *)(imu_readings))[5] << 8) | ((uint8_t *)(imu_readings))[4]);
-	  acc_x = ((float)(accel_data[0]))/100.0f; //m/s2
-	  acc_y = ((float)(accel_data[1]))/100.0f;
-	  acc_z = ((float)(accel_data[2]))/100.0f;
-	  printf("X: %d", acc_x);
-	  printf("Y: %d", acc_y);
-	  printf("Z: %d", acc_z);
 
+	  HAL_Delay(100);
+	  status = GetAccelData(&hi2c1, imu_reading);
+	        // REMOVED the (int16_t*) cast to fix the compiler warning
+	        if (status == HAL_OK)
+	        {
+	            // Manually combine the LSB and MSB bytes into 16-bit integers
+
+	            raw_x = (int16_t)((imu_reading[1] << 8) | imu_reading[0]);
+	            raw_y = (int16_t)((imu_reading[3] << 8) | imu_reading[2]);
+	            raw_z = (int16_t)((imu_reading[5] << 8) | imu_reading[4]);
+
+	            // Convert to m/s^2 based on BNO055 default scale (100 LSB = 1 m/s^2)
+	            acc_x = (float)raw_x / 100.0f;
+	            acc_y = (float)raw_y / 100.0f;
+	            acc_z = (float)raw_z / 100.0f;
+	        }
+	        if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1, BNO055_EUL_HEADING_LSB,
+	                                 I2C_MEMADD_SIZE_8BIT, euler_reading, 6, 100) == HAL_OK)
+	            {
+	                // Combine LSB and MSB
+	                raw_yaw   = (int16_t)((euler_reading[1] << 8) | euler_reading[0]);
+	                raw_roll  = (int16_t)((euler_reading[3] << 8) | euler_reading[2]);
+	                raw_pitch = (int16_t)((euler_reading[5] << 8) | euler_reading[4]);
+
+	                // Convert to degrees (1 LSB = 1/16 degree)
+	                yaw   = (float)raw_yaw / 16.0f;
+	                roll  = (float)raw_roll / 16.0f;
+	                pitch = (float)raw_pitch / 16.0f;
+	            }
 	  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -205,16 +234,35 @@ void SystemClock_Config(void)
   * @param None
   * @retval None
   */
+/* main.c */
 void MX_I2C1_Init(void)
 {
+  // 1. Force a complete reset of the I2C1 peripheral hardware
+  // This clears any stuck internal flags (like BUSY) instantly.
+  __HAL_RCC_I2C1_FORCE_RESET();
+  HAL_Delay(2);
+  __HAL_RCC_I2C1_RELEASE_RESET();
 
-  /* USER CODE BEGIN I2C1_Init 0 */
+  // 2. Manual Bus Clear (Bit-Banging SCL on PB8)
+  // This un-sticks the BNO055 if it is holding SDA low.
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /* USER CODE END I2C1_Init 0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8; // PB8 is SCL
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN I2C1_Init 1 */
+  // Toggle SCL 10 times to force sensor to release SDA
+  for (int i = 0; i < 10; i++) {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET);
+      HAL_Delay(2);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);
+      HAL_Delay(2);
+  }
 
-  /* USER CODE END I2C1_Init 1 */
+  // 3. Standard HAL Initialization
   hi2c1.Instance = I2C1;
   hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
@@ -224,16 +272,13 @@ void MX_I2C1_Init(void)
   hi2c1.Init.OwnAddress2 = 0;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+
+  // If this still fails, the hardware lines are physically shorted to Ground.
   if (HAL_I2C_Init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
-
 /**
   * @brief USART2 Initialization Function
   * @param None

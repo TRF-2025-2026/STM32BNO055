@@ -17,7 +17,7 @@ uint8_t Modr= MODR_30Hz;
 uint8_t PWRMode=Normal;
 uint8_t OpMode= NDOF;
 
-uint8_t status;
+//uint8_t status;
 float aRes,mRes,gRes;
 uint8_t cal_sys=0;
 uint8_t cal_gyro=0;
@@ -30,38 +30,50 @@ const char read_calib[2]= {REG_READ, BNO055_CALIB_STAT};
 const char reset_sensor[3]= {REG_READ, BNO055_SYS_TRIGGER,0x01};
 uint8_t get_readings[1] = {BNO055_ACC_DATA_X_LSB};
 
-void BNO055_InitI2C(I2C_HandleTypeDef *hi2c_dev){
-	uint8_t opr_conf_mode[2]={BNO055_OPR_MODE,CONFIGMODE};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, opr_conf_mode, sizeof(opr_conf_mode), 10);
-	HAL_Delay(10);
-	uint8_t conf_page1[2]={BNO055_PAGE_ID,0x01};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_page1, sizeof(conf_page1), 10);
-	HAL_Delay(10);
-	uint8_t conf_acc[2]={BNO055_ACC_CONFIG,APwrMode << 5 |Abw<< 2| Ascale};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_acc, sizeof(conf_acc), 10);
-	HAL_Delay(10);
-//	uint8_t conf_mag[2]={BNO055_MAG_CONFIG,MPwrMode << 5 |Mbw<< 2| Mscale};
-//	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_mag, sizeof(conf_mag), 10);
-//	HAL_Delay(10);
-	uint8_t conf_gyro[2] = {BNO055_GYRO_CONFIG_0, Gbw << 3 | Gscale};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_gyro, sizeof(conf_gyro), 10);
-	HAL_Delay(10);
-	uint8_t conf_gyro_pwr[2]={BNO055_GYRO_CONFIG_1,GPwrMode << 5 |Abw<< 2|Gscale};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_gyro, sizeof(conf_gyro_pwr), 10);
-	HAL_Delay(10);
-	uint8_t conf_mag_pwr[4] = {REG_WRITE, BNO055_MAG_CONFIG, 0x01, MPwrMode << 5 | MOpMode << 3 | Modr};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_mag_pwr, sizeof(conf_mag_pwr), 10);
-	HAL_Delay(10);
-	uint8_t conf_page0[2]={BNO055_PAGE_ID,0x00};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, conf_page0, sizeof(conf_page0), 10);
-	HAL_Delay(10);
-	uint8_t pwr_pwrmode[2] = {BNO055_PWR_MODE, PWRMode};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, pwr_pwrmode, sizeof(pwr_pwrmode), 10);
-	HAL_Delay(10);
-	uint8_t opr_oprmode[2] = {BNO055_OPR_MODE, OPRMode};
-	HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO<<1, opr_oprmode, sizeof(opr_oprmode), 10);
-	HAL_Delay(50);
+/* Update in accel.c */
+HAL_StatusTypeDef BNO055_Init_I2C(I2C_HandleTypeDef *hi2c_dev) {
+    HAL_StatusTypeDef res;
 
+    // 1. Enter CONFIGMODE
+    uint8_t opr_conf_mode[2] = {BNO055_OPR_MODE, CONFIGMODE};
+    res = HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, opr_conf_mode, 2, 10);
+    if(res != HAL_OK) return res;
+    HAL_Delay(20);
+
+    // 2. Setup Page 1
+    uint8_t conf_page1[2] = {BNO055_PAGE_ID, 0x01};
+    res = HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_page1, 2, 10);
+    if(res != HAL_OK) return res;
+    HAL_Delay(10);
+
+    // 3. Configure Sensors
+    uint8_t conf_acc[2] = {BNO055_ACC_CONFIG, (APwrMode << 5 | Abw << 2 | Ascale)};
+    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_acc, 2, 10);
+
+    uint8_t conf_gyro[2] = {BNO055_GYRO_CONFIG_0, (Gbw << 3 | Gscale)};
+    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_gyro, 2, 10);
+    uint8_t conf_gyro_pwr[2] = {BNO055_GYRO_CONFIG_1, (GPwrMode << 5 | Abw << 2 | Gscale)};
+
+//    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_gyro_pwr, 2, 10);
+    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_gyro_pwr, 2, 10);
+
+    uint8_t conf_mag_pwr[2] = {BNO055_MAG_CONFIG, (MPwrMode << 5 | MOpMode << 3 | Modr)};
+    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_mag_pwr, 2, 10);
+    HAL_Delay(10);
+
+    // 4. Return to Page 0
+    uint8_t conf_page0[2] = {BNO055_PAGE_ID, 0x00};
+    HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_page0, 2, 10);
+    HAL_Delay(10);
+
+    // 5. Enter NDOF Mode
+    uint8_t opr_oprmode[2] = {BNO055_OPR_MODE, NDOF};
+    res = HAL_I2C_Master_Transmit(hi2c_dev, BNO055_I2C_ADDR_LO << 1, opr_oprmode, 2, 10);
+
+    // CRITICAL: Give fusion engine time to stabilize
+    HAL_Delay(100);
+
+    return res;
 }
 
 uint8_t GetAccelData(I2C_HandleTypeDef* hi2c_dev, uint8_t* buf) {
