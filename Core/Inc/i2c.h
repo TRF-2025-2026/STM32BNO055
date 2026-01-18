@@ -10,8 +10,8 @@
 #include "stm32f4xx_hal.h"
 #include "bno055.h"
 
-//#define BNO055_I2C_ADDR_LO     (0x28 << 1)   // AD0 = LOW
-//#define BNO055_I2C_ADDR_HI     (0x29 << 1)   // AD0 = HIGH
+//#define BNO055_I2C_ADDR_LO     (0x28 << 1)  AD0 = LOW
+//#define BNO055_I2C_ADDR_HI     (0x29 << 1)  AD0 = HIGH
 
 extern I2C_HandleTypeDef hi2c1;
 HAL_StatusTypeDef BNO055_WriteReg(uint8_t reg, uint8_t data);

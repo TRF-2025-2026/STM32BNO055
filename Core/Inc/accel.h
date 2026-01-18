@@ -13,11 +13,11 @@
 #define ACC_MEASURE_PERIOD 91
 #define	IMU_NUMBER_OF_BYTES 18
 
-extern uint8_t	imu_readings[IMU_NUMBER_OF_BYTES];
-extern HAL_StatusTypeDef status;
+extern uint8_t	imu_readings[IMU_NUMBER_OF_BYTES]; //Contains IMU_NUMBER_OF_BYTES raw data readings from BNO
+extern HAL_StatusTypeDef status;// Status of HAL
 
-void BNO055_Init(void);
-HAL_StatusTypeDef BNO055_Init_I2C(I2C_HandleTypeDef* hi2c_device);
+void BNO055_Init(void);//Initialize sensor
+HAL_StatusTypeDef BNO055_Init_I2C(I2C_HandleTypeDef* hi2c_device);//Initialize I2C communication
 void readAccelData(int16_t * destination);
 uint8_t GetAccelData(I2C_HandleTypeDef* hi2c_device, uint8_t* str);
 uint8_t GetAccelChipId(I2C_HandleTypeDef* hi2c_device, uint8_t *chip_id);

@@ -238,7 +238,7 @@ enum MPwrMode {
   Suspend
 };
 
-enum Modr {         // magnetometer output data rate
+enum Modr {
   MODR_2Hz = 0,
   MODR_6Hz,
   MODR_8Hz,
