@@ -31,48 +31,67 @@ const char reset_sensor[3]= {REG_READ, BNO055_SYS_TRIGGER,0x01};//Used to Reset 
 uint8_t get_readings[1] = {BNO055_ACC_DATA_X_LSB};
 HAL_StatusTypeDef BNO055_Init_I2C(I2C_HandleTypeDef *hi2c_dev) {
     HAL_StatusTypeDef res;
-    uint8_t dev_addr = (BNO055_I2C_ADDR_LO << 1);//Can be 0x28 or 0x29. Currently set as 0x28
+    uint8_t dev_addr = (BNO055_I2C_ADDR_LO << 1); // 0x28 shifted for HAL
+    uint8_t data[2];
 
-    // 1. Enter CONFIGMODE
-    uint8_t opr_conf_mode[2] = {BNO055_OPR_MODE, CONFIGMODE};
-    res = HAL_I2C_Master_Transmit_DMA(hi2c_dev, dev_addr, opr_conf_mode, 2);
+    // 1. Force Page 0 and enter CONFIGMODE
+    // The BNO055 must be in CONFIGMODE to change sensor settings
+    data[0] = BNO055_PAGE_ID;
+    data[1] = 0x00;
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
+
+    data[0] = BNO055_OPR_MODE;
+    data[1] = CONFIGMODE;
+    res = HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
     if(res != HAL_OK) return res;
-    HAL_Delay(50);
-    // 2. Setup Page 1
-    uint8_t conf_page1[2] = {BNO055_PAGE_ID, 0x01};// There are 2 pages, page 0 and page 1
-    res = HAL_I2C_Master_Transmit_DMA(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_page1, 2);
-    if(res != HAL_OK)
-    	return res;
+    HAL_Delay(50); // Allow time for mode switch
+
+    // 2. Setup Page 1 for Configuration
+    // Page 1 contains the configuration registers for Acc, Mag, and Gyro
+    data[0] = BNO055_PAGE_ID;
+    data[1] = 0x01;
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
+
+    // 3. Configure Accelerometer
+    data[0] = BNO055_ACC_CONFIG;
+    data[1] = (APwrMode << 5 | Abw << 2 | Ascale); // Uses settings defined in accel.c
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
+
+    // 4. Configure Gyroscope
+    // Fixed: Using Gyro-specific variables Gbw and Gscale
+    data[0] = BNO055_GYRO_CONFIG_0;
+    data[1] = (Gbw << 3 | Gscale);
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
+
+    data[0] = BNO055_GYRO_CONFIG_1;
+    data[1] = GPwrMode;
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
+
+    // 5. Configure Magnetometer
+    data[0] = BNO055_MAG_CONFIG;
+    data[1] = (MPwrMode << 5 | MOpMode << 3 | Modr);
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
     HAL_Delay(10);
 
-    // 3. Configure Sensors
-    uint8_t conf_acc[2] = {BNO055_ACC_CONFIG, (APwrMode << 5 | Abw << 2 | Ascale)};
-    HAL_I2C_Master_Transmit_DMA(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_acc, 2);
+    // 6. Return to Page 0 and set Operation Mode
+    data[0] = BNO055_PAGE_ID;
+    data[1] = 0x00;
+    HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
 
-    uint8_t conf_gyro[2] = {BNO055_GYRO_CONFIG_0, (Gbw << 3 | Gscale)};
-    HAL_I2C_Master_Transmit_DMA(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_gyro, 2);
-    uint8_t conf_gyro_pwr[2] = {BNO055_GYRO_CONFIG_1, (GPwrMode << 5 | Abw << 2 | Gscale)};
+    // Enter NDOF (9-Degrees of Freedom Sensor Fusion mode)
+    data[0] = BNO055_OPR_MODE;
+    data[1] = NDOF;
+    res = HAL_I2C_Master_Transmit(hi2c_dev, dev_addr, data, 2, 1000);
 
-    HAL_I2C_Master_Transmit_DMA(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_gyro_pwr, 2);
+    // Critical: The BNO055 requires up to 800ms to start fusion in NDOF mode
+    HAL_Delay(800);
 
-    uint8_t conf_mag_pwr[2] = {BNO055_MAG_CONFIG, (MPwrMode << 5 | MOpMode << 3 | Modr)};
-    HAL_I2C_Master_Transmit_DMA(hi2c_dev, BNO055_I2C_ADDR_LO << 1, conf_mag_pwr, 2);
-    HAL_Delay(10);
-
-    // 4. Return to Page 0
-    uint8_t conf_page0[2] = {BNO055_PAGE_ID, 0x00};
-        HAL_I2C_Master_Transmit_DMA(hi2c_dev, dev_addr, conf_page0, 2);
-        HAL_Delay(20);
-
-        // 5. Enter operation Mode. Considered NDOF below.
-        uint8_t opr_oprmode[2] = {BNO055_OPR_MODE, NDOF};
-        res = HAL_I2C_Master_Transmit_DMA(hi2c_dev, dev_addr, opr_oprmode, 2);
-        HAL_Delay(800);
-
-        return res;
+    return res;
 }
-
 uint8_t GetAccelData(I2C_HandleTypeDef* hi2c_dev, uint8_t* buf) {
+	if (hi2c_dev->State != HAL_I2C_STATE_READY) {
+	        return HAL_BUSY;
+	    }
     HAL_StatusTypeDef status;
     status = HAL_I2C_Mem_Read_DMA(hi2c_dev,BNO055_I2C_ADDR_LO << 1,BNO055_ACC_DATA_X_LSB,I2C_MEMADD_SIZE_8BIT,buf,6);
     return (uint8_t)status;
