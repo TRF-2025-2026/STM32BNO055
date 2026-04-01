@@ -24,9 +24,8 @@
 #include "bno055.h"
 #include "accel.h"
 #include "i2c.h"
-#include<stdio.h>
+#include <stdio.h>
 #include <stdbool.h>
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,14 +51,19 @@ DMA_HandleTypeDef hdma_i2c1_tx;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+/* --- MEMORY SAFETY FIXES --- */
 volatile uint8_t dma_rx_complete = 0;
-uint8_t imu_reading[6];
+volatile uint8_t imu_reading[6]; // Made volatile for DMA safety
+
 int16_t raw_x, raw_y, raw_z;
 float acc_x, acc_y, acc_z;
 
 uint8_t euler_reading[6];
 int16_t raw_yaw, raw_roll, raw_pitch;
 float yaw, roll, pitch;
+
+/* --- STATE MACHINE TRACKER --- */
+HAL_StatusTypeDef sys_status = HAL_OK;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,9 +72,10 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+
 /* USER CODE BEGIN PFP */
 
-#ifdef __GNUC__9
+#ifdef __GNUC__
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #else
 #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
@@ -82,15 +87,49 @@ PUTCHAR_PROTOTYPE {
 	return ch;
 }
 
-//PUTCHAR_PROTOTYPE{
-//	while(HAL_I2C_Master_Transmit_DMA(&hi2c1, reg, data, len)){};
-//	return ch;
-//}
+void I2C_Bus_Recovery(void); // Prototype for our new recovery function
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+ * @brief Manually pulses the I2C clock to un-stick the BNO055
+ * NOTE: Adjust PB8 and PB9 if your I2C pins are different (e.g., PB6/PB7)
+ */
+void I2C_Bus_Recovery(void) {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    // 1. Enable GPIO Clock for Port B
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    // 2. Temporarily configure SCL (PB8) and SDA (PB9) as standard GPIOs
+    GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;    // Open Drain
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // 3. Set both lines HIGH initially
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_SET);
+    HAL_Delay(1);
+
+    // 4. Send 9 Clock Pulses on SCL to flush stuck bytes out of the BNO055
+    for (int i = 0; i < 9; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_RESET); // SCL LOW
+        HAL_Delay(1);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   // SCL HIGH
+        HAL_Delay(1);
+    }
+
+    // 5. Generate a manual I2C STOP condition (SCL High, then SDA Low -> High)
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, GPIO_PIN_SET);   // SCL HIGH
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_RESET); // SDA LOW
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, GPIO_PIN_SET);   // SDA HIGH
+    HAL_Delay(1);
+}
 /* USER CODE END 0 */
 
 /**
@@ -100,7 +139,7 @@ PUTCHAR_PROTOTYPE {
 int main(void) {
 
 	/* USER CODE BEGIN 1 */
-	printf("Terminal Link Active\r\n");
+
 	/* USER CODE END 1 */
 
 	/* MCU Configuration--------------------------------------------------------*/
@@ -122,56 +161,99 @@ int main(void) {
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
 	MX_DMA_Init();
+
+    /* --- CRITICAL BOOT SEQUENCE FIX --- */
+    I2C_Bus_Recovery(); // Free the bus before the HAL tries to grab it!
+
 	MX_I2C1_Init();
 	MX_USART2_UART_Init();
+
 	/* USER CODE BEGIN 2 */
-	BNO055_Init_I2C(&hi2c1);
+	printf("\r\n--- Terminal Link Active ---\r\n");
+
+    // 1. Initialize Sensor and check status
+	sys_status = BNO055_Init_I2C(&hi2c1);
+    if (sys_status != HAL_OK) {
+        printf("ERROR: BNO055 Init Failed!\r\n");
+    } else {
+        printf("BNO055 Initialized Successfully.\r\n");
+    }
+
+    // 2. CRITICAL: Wait for the sensor's Cortex-M0 to finish booting NDOF mode
+    HAL_Delay(800);
+
+    // 3. Trigger the very first background DMA read to start the cycle
+    dma_rx_complete = 0;
+    sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-	GetAccelData(&hi2c1, imu_reading);
 	while (1) {
 
-		HAL_Delay(100);
-		/*status =*/ GetAccelData(&hi2c1, imu_reading); //Fetc
-		if (dma_rx_complete) {
-			while (!dma_rx_complete)
-				; // Wait for DMA to finish (or use a timeout)
-			dma_rx_complete = 0;
-			// Manually combine the LSB and MSB bytes into 16-bit integers
+        /* ==========================================
+           STATE 1: NORMAL OPERATION
+           ========================================== */
+		if (dma_rx_complete && sys_status == HAL_OK) {
+			dma_rx_complete = 0; // Clear flag immediately to prep for next read
+
+			// --- Process Accelerometer Data ---
 			raw_x = (int16_t) ((imu_reading[1] << 8) | imu_reading[0]);
 			raw_y = (int16_t) ((imu_reading[3] << 8) | imu_reading[2]);
 			raw_z = (int16_t) ((imu_reading[5] << 8) | imu_reading[4]);
 
-			// Convert to m/s^2 based on BNO055 default scale (100 LSB = 1 m/s^2)
 			acc_x = (float) raw_x / 100.0f;
 			acc_y = (float) raw_y / 100.0f;
 			acc_z = (float) raw_z / 100.0f;
 
-			if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1,
-					BNO055_EUL_HEADING_LSB,
-					I2C_MEMADD_SIZE_8BIT, euler_reading, 6, 1000) == HAL_OK) {
-				// Combine LSB and MSB
-				raw_yaw =
-						(int16_t) ((euler_reading[1] << 8) | euler_reading[0]);
-				raw_roll =
-						(int16_t) ((euler_reading[3] << 8) | euler_reading[2]);
-				raw_pitch = (int16_t) ((euler_reading[5] << 8)
-						| euler_reading[4]);
+            // --- Read & Process Euler Angles ---
+            // CRITICAL: 100ms timeout prevents HAL deadlocks
+			if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1, BNO055_EUL_HEADING_LSB,
+			                     I2C_MEMADD_SIZE_8BIT, euler_reading, 6, 100) == HAL_OK) {
 
-				// Convert to degrees (1 LSB = 1/16 degree)
-				yaw = (float) raw_yaw / 16.0f;
-				roll = (float) raw_roll / 16.0f;
+                raw_yaw   = (int16_t)((euler_reading[1] << 8) | euler_reading[0]);
+                raw_roll  = (int16_t)((euler_reading[3] << 8) | euler_reading[2]);
+                raw_pitch = (int16_t)((euler_reading[5] << 8) | euler_reading[4]);
+
+			    yaw   = (float) raw_yaw / 16.0f;
+				roll  = (float) raw_roll / 16.0f;
 				pitch = (float) raw_pitch / 16.0f;
+
 			}
+
+            // Pacing delay so we don't spam the I2C bus faster than the sensor updates
 			HAL_Delay(50);
-			if (GetAccelData(&hi2c1, imu_reading) != HAL_OK) {
-				HAL_I2C_DeInit(&hi2c1);
-				HAL_I2C_Init(&hi2c1);
-				GetAccelData(&hi2c1, imu_reading);
-			}
+
+            // Trigger the NEXT DMA read
+			sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
 		}
+
+        /* ==========================================
+           STATE 2: ERROR RECOVERY (The HAL_BUSY Killer)
+           ========================================== */
+        else if (sys_status != HAL_OK) {
+            printf("HAL_ERROR or HAL_BUSY detected. Recovering...\r\n");
+
+            // 1. Completely disable the I2C peripheral
+            HAL_I2C_DeInit(&hi2c1);
+
+            // 2. FORCE UNLOCK the HAL State Machine
+            hi2c1.State = HAL_I2C_STATE_READY;
+            __HAL_UNLOCK(&hi2c1);
+
+            // 3. Physically pulse the wires to un-stick the BNO055
+            I2C_Bus_Recovery();
+
+            // 4. Reboot the peripheral
+            MX_I2C1_Init();
+
+            // 5. Kick off the DMA cycle again
+            dma_rx_complete = 0;
+            sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+
+            // Give it time to breathe before looping
+            HAL_Delay(100);
+        }
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
