@@ -24,6 +24,7 @@
 #include "bno055.h"
 #include "accel.h"
 #include "i2c.h"
+#include "eeprom.h"
 #include <stdio.h>
 #include <stdbool.h>
 /* USER CODE END Includes */
@@ -52,15 +53,19 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 /* --- MEMORY SAFETY FIXES --- */
-volatile uint8_t dma_rx_complete = 0;
+//volatile uint8_t dma_rx_complete = 0;
 volatile uint8_t imu_reading[6]; // Made volatile for DMA safety
 
 int16_t raw_x, raw_y, raw_z;
 float acc_x, acc_y, acc_z;
 
 uint8_t euler_reading[6];
+uint16_t bno_offsets[11];
 int16_t raw_yaw, raw_roll, raw_pitch;
 float yaw, roll, pitch;
+
+uint8_t calib_status = 0;
+bool is_calibrated = false;
 
 /* --- STATE MACHINE TRACKER --- */
 HAL_StatusTypeDef sys_status = HAL_OK;
@@ -171,94 +176,138 @@ int main(void) {
 	/* USER CODE BEGIN 2 */
 	printf("\r\n--- Terminal Link Active ---\r\n");
 
-    // 1. Initialize Sensor and check status
-	sys_status = BNO055_Init_I2C(&hi2c1);
-    if (sys_status != HAL_OK) {
-        printf("ERROR: BNO055 Init Failed!\r\n");
-    } else {
-        printf("BNO055 Initialized Successfully.\r\n");
-    }
-
-    // 2. CRITICAL: Wait for the sensor's Cortex-M0 to finish booting NDOF mode
-    HAL_Delay(800);
-
-    // 3. Trigger the very first background DMA read to start the cycle
-    dma_rx_complete = 0;
-    sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
-	/* USER CODE END 2 */
-
-	/* Infinite loop */
-	/* USER CODE BEGIN WHILE */
-	while (1) {
-
-        /* ==========================================
-           STATE 1: NORMAL OPERATION
-           ========================================== */
-		if (dma_rx_complete && sys_status == HAL_OK) {
-			dma_rx_complete = 0; // Clear flag immediately to prep for next read
-
-			// --- Process Accelerometer Data ---
-			raw_x = (int16_t) ((imu_reading[1] << 8) | imu_reading[0]);
-			raw_y = (int16_t) ((imu_reading[3] << 8) | imu_reading[2]);
-			raw_z = (int16_t) ((imu_reading[5] << 8) | imu_reading[4]);
-
-			acc_x = (float) raw_x / 100.0f;
-			acc_y = (float) raw_y / 100.0f;
-			acc_z = (float) raw_z / 100.0f;
-
-            // --- Read & Process Euler Angles ---
-            // CRITICAL: 100ms timeout prevents HAL deadlocks
-			if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1, BNO055_EUL_HEADING_LSB,
-			                     I2C_MEMADD_SIZE_8BIT, euler_reading, 6, 100) == HAL_OK) {
-
-                raw_yaw   = (int16_t)((euler_reading[1] << 8) | euler_reading[0]);
-                raw_roll  = (int16_t)((euler_reading[3] << 8) | euler_reading[2]);
-                raw_pitch = (int16_t)((euler_reading[5] << 8) | euler_reading[4]);
-
-			    yaw   = (float) raw_yaw / 16.0f;
-				roll  = (float) raw_roll / 16.0f;
-				pitch = (float) raw_pitch / 16.0f;
-
-			}
-
-            // Pacing delay so we don't spam the I2C bus faster than the sensor updates
-			HAL_Delay(50);
-
-            // Trigger the NEXT DMA read
-			sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
-		}
-
-        /* ==========================================
-           STATE 2: ERROR RECOVERY (The HAL_BUSY Killer)
-           ========================================== */
-        else if (sys_status != HAL_OK) {
-            printf("HAL_ERROR or HAL_BUSY detected. Recovering...\r\n");
-
-            // 1. Completely disable the I2C peripheral
-            HAL_I2C_DeInit(&hi2c1);
-
-            // 2. FORCE UNLOCK the HAL State Machine
-            hi2c1.State = HAL_I2C_STATE_READY;
-            __HAL_UNLOCK(&hi2c1);
-
-            // 3. Physically pulse the wires to un-stick the BNO055
-            I2C_Bus_Recovery();
-
-            // 4. Reboot the peripheral
-            MX_I2C1_Init();
-
-            // 5. Kick off the DMA cycle again
-            dma_rx_complete = 0;
-            sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
-
-            // Give it time to breathe before looping
-            HAL_Delay(100);
-        }
-		/* USER CODE END WHILE */
-
-		/* USER CODE BEGIN 3 */
+	/* 1. Initialize EEPROM Emulation Logic */
+	// This checks the headers of Sector 2 and 3 [cite: 150, 324]
+	if (EE_Init() != HAL_OK) {
+	    printf("EEPROM Init Failed!\r\n"); // [cite: 340, 541]
+	} else {
+	    /* 2. Check for saved calibration offsets in Flash */
+	    uint16_t first_val;
+	    // 0x0001 is our Virtual Address for Accel_X [cite: 156, 175]
+	    if (EE_ReadVariable(0x0001, &first_val) == 0) {
+	        printf("Saved Calibration Found! Loading...\r\n");
+	        for(int i = 0; i < 11; i++) {
+	            // Read all 11 variables (22 bytes) [cite: 156, 585]
+	            EE_ReadVariable(0x0001 + i, &bno_offsets[i]);
+	        }
+	        // Load offsets into the sensor registers [cite: 54, 157]
+	        BNO055_Set_Offsets(&hi2c1, bno_offsets);
+	    }
 	}
-	/* USER CODE END 3 */
+
+	/* 3. Standard BNO055 Startup */
+	sys_status = BNO055_Init_I2C(&hi2c1);
+	if (sys_status != HAL_OK) {
+	    printf("ERROR: BNO055 Init Failed!\r\n");
+	} else {
+	    printf("BNO055 Initialized Successfully.\r\n");
+	}
+
+	HAL_Delay(800); // Wait for NDOF fusion
+
+//	dma_rx_complete = 0;
+	sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+	/* USER CODE END 2 */
+	/* Infinite loop */
+	/* Infinite loop */
+	  /* USER CODE BEGIN WHILE */
+	  while (1)
+	  {
+	    /* ======================================================================
+	       STATE 1: NORMAL OPERATION (DMA Data Processing)
+	       ====================================================================== */
+	    if (sys_status == HAL_OK)
+	    {
+//	      dma_rx_complete = 0; // Clear flag immediately to allow next DMA cycle
+
+	      // --- 1. Process Accelerometer Data (from DMA Buffer) ---
+	      raw_x = (int16_t) ((imu_reading[1] << 8) | imu_reading[0]);
+	      raw_y = (int16_t) ((imu_reading[3] << 8) | imu_reading[2]);
+	      raw_z = (int16_t) ((imu_reading[5] << 8) | imu_reading[4]);
+
+	      acc_x = (float) raw_x / 100.0f;
+	      acc_y = (float) raw_y / 100.0f;
+	      acc_z = (float) raw_z / 100.0f;
+
+	      // --- 2. Read & Process Euler Angles (Standard I2C Read) ---
+	      // Uses a 100ms timeout to prevent software lockup if the bus glitche [cite: 614]
+	      if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1, BNO055_EUL_HEADING_LSB,
+	                           I2C_MEMADD_SIZE_8BIT, euler_reading, 6, 100) == HAL_OK)
+	      {
+	        raw_yaw   = (int16_t)((euler_reading[1] << 8) | euler_reading[0]);
+	        raw_roll  = (int16_t)((euler_reading[3] << 8) | euler_reading[2]);
+	        raw_pitch = (int16_t)((euler_reading[5] << 8) | euler_reading[4]);
+
+	        yaw   = (float) raw_yaw / 16.0f;
+	        roll  = (float) raw_roll / 16.0f;
+	        pitch = (float) raw_pitch / 16.0f;
+	      }
+
+	      // --- 3. Auto-Save Calibration Offsets (EEPROM Emulation) ---
+	      // Check the CALIB_STAT register (0x35) to see if fusion is complete [cite: 312]
+	      if (HAL_I2C_Mem_Read(&hi2c1, BNO055_I2C_ADDR_LO << 1, 0x35, 1, &calib_status, 1, 100) == HAL_OK)
+	      {
+	        // 0xFF indicates Sys, Gyro, Accel, and Mag are all at Level 3 calibration
+	        if (calib_status == 0xFF && !is_calibrated)
+	        {
+	          printf("Calibration 100%%! Persisting offsets to Flash...\r\n");
+
+	          // Read 22 bytes of offsets (0x55 to 0x6A) into our local array
+	          BNO055_Get_Offsets(&hi2c1, bno_offsets);
+
+	          HAL_I2C_DeInit(&hi2c1);
+
+	          // Store variables in Flash. Each update uses 4 bytes of Flash [cite: 164, 585]
+	          for(int i = 0; i < 11; i++)
+	          {
+	            EE_WriteVariable(0x0001 + i, bno_offsets[i]);
+	          }
+
+	          is_calibrated = true; // Flag to prevent saving again and wearing out Flash [cite: 458, 560]
+	          printf("Offsets Saved Successfully.\r\n");
+	          I2C_Bus_Recovery();
+	          MX_I2C1_Init();
+	          sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+	        }
+	      }
+
+	      // --- 4. Loop Pacing & Next Cycle Trigger ---
+	      HAL_Delay(50); // Small delay so we don't saturate the I2C bus
+
+	      // Start the NEXT DMA background read
+	      sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+	    }
+
+	    /* ======================================================================
+	       STATE 2: ERROR RECOVERY (The HAL_BUSY & Hardware Hang Killer)
+	       ====================================================================== */
+	    else if (sys_status != HAL_OK)
+	    {
+	      printf("I2C Error or Bus Busy. Starting Recovery Procedure...\r\n");
+	      HAL_DMA_Abort(&hdma_i2c1_rx);
+
+	      // 1. Fully reset the I2C peripheral state
+	      HAL_I2C_DeInit(&hi2c1);
+	      hi2c1.State = HAL_I2C_STATE_RESET;
+	      __HAL_UNLOCK(&hi2c1);
+
+	      // 2. Perform Physical Bus Recovery (Clock Pulsing) to un-stick SDA line
+	      I2C_Bus_Recovery();
+
+	      // 3. Re-initialize the I2C peripheral [cite: 340]
+	      MX_I2C1_Init();
+
+	      // 4. Attempt to restart the DMA cycle
+//	      dma_rx_complete = 0;
+	      sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+
+	      HAL_Delay(100); // Give the bus a moment to stabilize
+	    }
+	    /* USER CODE END WHILE */
+
+	    /* USER CODE BEGIN 3 */
+	  }
+	  /* USER CODE END 3 */
 }
 
 /**
@@ -403,11 +452,11 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
-	if (hi2c->Instance == I2C1) {
-		dma_rx_complete = 1; // Signal the main loop
-	}
-}
+//void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+//	if (hi2c->Instance == I2C1) {
+//		dma_rx_complete = 1; // Signal the main loop
+//	}
+//}
 
 /* USER CODE END 4 */
 

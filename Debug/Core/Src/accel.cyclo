@@ -1,6 +1,6 @@
 ../Core/Src/accel.c:22:19:BNO055_Init_I2C	3
-../Core/Src/accel.c:79:19:GetAccelData	2
-../Core/Src/accel.c:91:19:GetAccelChipId	1
-../Core/Src/accel.c:100:19:GetAccelTemp	1
-../Core/Src/accel.c:109:19:GetCalibration	1
-../Core/Src/accel.c:115:9:BNO055_Calib_Calc	5
+../Core/Src/accel.c:76:19:GetAccelData	1
+../Core/Src/accel.c:86:19:GetCalibration	1
+../Core/Src/accel.c:94:9:BNO055_Calib_Calc	5
+../Core/Src/accel.c:109:6:BNO055_Get_Offsets	3
+../Core/Src/accel.c:118:6:BNO055_Set_Offsets	2

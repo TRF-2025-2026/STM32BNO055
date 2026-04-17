@@ -48,5 +48,7 @@ HAL_StatusTypeDef GetCalibration(I2C_HandleTypeDef* hi2c_device, uint8_t *cal_de
  */
 uint8_t BNO055_Calib_Calc(uint8_t calibration, uint8_t *cal_system, uint8_t *cal_gyro,
                          uint8_t *cal_acc, uint8_t *cal_mag, bool *fully_calibrated);
+void BNO055_Get_Offsets(I2C_HandleTypeDef *hi2c, uint16_t *offsets);
+void BNO055_Set_Offsets(I2C_HandleTypeDef *hi2c, uint16_t *offsets);
 
 #endif /* INC_ACCEL_H_ */
