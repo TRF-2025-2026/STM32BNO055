@@ -282,28 +282,28 @@ int main(void) {
 	       STATE 2: ERROR RECOVERY (The HAL_BUSY & Hardware Hang Killer)
 	       ====================================================================== */
 	    else if (sys_status != HAL_OK)
-	    {
-	      printf("I2C Error or Bus Busy. Starting Recovery Procedure...\r\n");
-	      HAL_DMA_Abort(&hdma_i2c1_rx);
+	        {
+	          printf("Software Error (0) detected. Forcing Full State Reset...\r\n");
 
-	      // 1. Fully reset the I2C peripheral state
-	      HAL_I2C_DeInit(&hi2c1);
-	      hi2c1.State = HAL_I2C_STATE_RESET;
-	      __HAL_UNLOCK(&hi2c1);
+	          // 1. Force Software Unlock and Reset
+	          __HAL_UNLOCK(&hi2c1);          // Break any internal HAL locks
+	          HAL_I2C_DeInit(&hi2c1);        // Shut down the peripheral
+	          hi2c1.State = HAL_I2C_STATE_RESET;
 
-	      // 2. Perform Physical Bus Recovery (Clock Pulsing) to un-stick SDA line
-	      I2C_Bus_Recovery();
+	          // 2. Hardware Pulse (The usual recovery)
+	          I2C_Bus_Recovery();
 
-	      // 3. Re-initialize the I2C peripheral [cite: 340]
-	      MX_I2C1_Init();
+	          // 3. Re-Initialize
+	          MX_I2C1_Init();
 
-	      // 4. Attempt to restart the DMA cycle
-//	      dma_rx_complete = 0;
-	      sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+	          // 4. CRITICAL: Wait for the HAL to finish internal setup
+	          HAL_Delay(10);
 
-	      HAL_Delay(100); // Give the bus a moment to stabilize
-	    }
-	    /* USER CODE END WHILE */
+	          // 5. Force the state to READY manually just in case Init was lazy
+	          hi2c1.State = HAL_I2C_STATE_READY;
+
+	          sys_status = GetAccelData(&hi2c1, (uint8_t*)imu_reading);
+	        }	    /* USER CODE END WHILE */
 
 	    /* USER CODE BEGIN 3 */
 	  }
